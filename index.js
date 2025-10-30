@@ -109,7 +109,7 @@ const server = createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "https://hrm-backend-one.vercel.app/api/",
+    origin: "https://crm-khaki-kappa.vercel.app/api/",
     methods: ["GET", "POST"],
     credentials: true,
   },

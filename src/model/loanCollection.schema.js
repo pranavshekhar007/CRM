@@ -12,8 +12,8 @@ const loanCollectionSchema = new mongoose.Schema({
   loanAmount: { type: Number, required: true },
   givenAmount: { type: Number, required: true },
   perDayCollection: { type: Number, required: true },
-  daysForLoan: { type: Number, required: true },
-  totalDueInstallments: { type: Number, required: true },
+  daysForLoan: { type: Number, },
+  totalDueInstallments: { type: Number, },
   totalPaidInstallments: { type: Number, default: 0 },
   totalPaidLoan: { type: Number, default: 0 },
   remainingLoan: { type: Number, required: true },
@@ -25,6 +25,8 @@ const loanCollectionSchema = new mongoose.Schema({
     enum: ["Open", "Closed"],
     default: "Open",
   },
+  loanStartDate: { type: Date },
+  loanEndDate: { type: Date },
   installments: [installmentSchema],
 });
 
