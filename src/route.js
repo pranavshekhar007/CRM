@@ -47,6 +47,8 @@ const attendancePolicyController = require("./controller/attendancePolicyControl
 const attendanceRecordController = require("./controller/attendanceRecordController");
 const attendanceRegularizationController = require("./controller/attendanceRegularizationController");
 const loanCollectionController = require("./controller/loanCollectionController");
+const investmentController = require("./controller/investmentController");
+const expenseController = require("./controller/expenseController");
 
 const router = express.Router();
 
@@ -98,6 +100,8 @@ router.use("/attendance-policy", attendancePolicyController);
 router.use("/attendance-record", attendanceRecordController);
 router.use("/attendance-regularization", attendanceRegularizationController);
 router.use("/loan", loanCollectionController);
+router.use("/expense", expenseController);
+router.use("/investment", investmentController);
 
 
 

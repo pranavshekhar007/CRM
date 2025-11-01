@@ -230,6 +230,13 @@ loanCollectionController.post("/addInstallment/:id", async (req, res) => {
     if (!loan)
       return sendResponse(res, 404, "Failed", { message: "Loan not found" });
 
+    // ✅ Check: prevent paying more than remaining loan
+    if (installAmount > loan.remainingLoan) {
+      return sendResponse(res, 400, "Failed", {
+        message: `The entered installment amount ₹${installAmount} is higher than the remaining loan balance of ₹${loan.remainingLoan}. Please enter an amount up to ₹${loan.remainingLoan}.`,
+      });
+    }
+
     // ✅ Add installment to history
     loan.installments.push({
       installAmount,
@@ -250,7 +257,6 @@ loanCollectionController.post("/addInstallment/:id", async (req, res) => {
       loan.totalDueInstallments = 0;
       loan.status = "Closed";
     } else {
-      // Calculate remaining dues based on perDayCollection
       const remainingDues = Math.ceil(
         loan.remainingLoan / loan.perDayCollection
       );
@@ -269,35 +275,32 @@ loanCollectionController.post("/addInstallment/:id", async (req, res) => {
   }
 });
 
+
 loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
   try {
     const {
       phone,
-      newLoanAmount,
       loanAmount,
       perDayCollection,
       daysForLoan,
       givenAmount,
-      addDueInstallments,
+      loanStartDate,
+      loanEndDate,
+      remainingLoan,
+      totalPaidLoan,
+      totalPaidInstallments,
+      totalDueInstallments,
+      status,
     } = req.body;
 
-    const effectiveLoanAmount = Number(newLoanAmount ?? loanAmount ?? 0);
-    const numPerDayCollection = Number(perDayCollection ?? 0);
-    const numDaysForLoan = Number(daysForLoan ?? 0);
-    const numGivenAmount = Number(givenAmount ?? 0);
-    const numAddDueInst =
-      typeof addDueInstallments !== "undefined"
-        ? Number(addDueInstallments)
-        : null; 
-
-    if (!phone || !effectiveLoanAmount || !numPerDayCollection) {
+    // ✅ Validate phone
+    if (!phone) {
       return sendResponse(res, 400, "Failed", {
-        message:
-          "Missing required fields (phone, loanAmount/newLoanAmount, perDayCollection).",
+        message: "Phone number is required.",
       });
     }
 
-    // Find latest loan for this phone
+    // ✅ Find the latest loan by phone
     const existingLoan = await LoanCollection.findOne({ phone }).sort({
       createdAt: -1,
     });
@@ -308,107 +311,38 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
       });
     }
 
-    // Prepare dates for the new piece
-    const startDate = new Date();
-    const endDate = new Date(startDate);
-    endDate.setDate(startDate.getDate() + numDaysForLoan);
+    // ✅ Overwrite all loan-related fields with manually provided data
+    existingLoan.loanAmount = loanAmount ?? existingLoan.loanAmount;
+    existingLoan.perDayCollection = perDayCollection ?? existingLoan.perDayCollection;
+    existingLoan.daysForLoan = daysForLoan ?? existingLoan.daysForLoan;
+    existingLoan.givenAmount = givenAmount ?? existingLoan.givenAmount;
+    existingLoan.loanStartDate = loanStartDate ? new Date(loanStartDate) : new Date();
+    existingLoan.loanEndDate = loanEndDate ? new Date(loanEndDate) : null;
 
-    // CASE: previous loan CLOSED -> start fresh cycle
-    if (existingLoan.status === "Closed") {
-      existingLoan.loanAmount = effectiveLoanAmount;
-      existingLoan.givenAmount = numGivenAmount;
-      existingLoan.perDayCollection = numPerDayCollection;
-      existingLoan.daysForLoan = numDaysForLoan;
-      existingLoan.loanStartDate = startDate;
-      existingLoan.loanEndDate = endDate;
+    // ✅ Manual fields (no calculations)
+    existingLoan.remainingLoan = remainingLoan ?? loanAmount ?? existingLoan.remainingLoan;
+    existingLoan.totalPaidLoan = totalPaidLoan ?? 0;
+    existingLoan.totalPaidInstallments = totalPaidInstallments ?? 0;
+    existingLoan.totalDueInstallments = totalDueInstallments ?? 0;
+    existingLoan.status = status || "Open";
 
-      existingLoan.remainingLoan = effectiveLoanAmount;
-      existingLoan.totalPaidLoan = 0;
-      existingLoan.totalPaidInstallments = 0;
-      existingLoan.totalDueInstallments = Math.ceil(
-        effectiveLoanAmount / numPerDayCollection
-      );
-      existingLoan.status = "Open";
-      existingLoan.installments = [];
+    // ✅ Keep previous installments for viewing history
+    // DO NOT clear installments
+    // existingLoan.installments = existingLoan.installments;
 
-      const updatedLoan = await existingLoan.save();
-      return sendResponse(res, 200, "Success", {
-        message: "Existing closed loan renewed successfully!",
-        data: updatedLoan,
-      });
-    }
+    const updatedLoan = await existingLoan.save();
 
-    if (existingLoan.status === "Open") {
-      const oldLoanAmount = Number(existingLoan.loanAmount || 0);
-      const oldGivenAmount = Number(existingLoan.givenAmount || 0);
-      const oldRemainingLoan = Number(existingLoan.remainingLoan || 0);
-      const oldTotalPaidLoan = Number(existingLoan.totalPaidLoan || 0);
-      const oldTotalPaidInstallments = Number(
-        existingLoan.totalPaidInstallments || 0
-      );
-      const oldTotalDueInstallments = Number(
-        existingLoan.totalDueInstallments || 0
-      );
-      const oldDaysForLoan = Number(existingLoan.daysForLoan || 0);
-
-      const newLoanAmountNumber = effectiveLoanAmount; 
-      const combinedLoanAmount = oldLoanAmount + newLoanAmountNumber;
-      const combinedGivenAmount = oldGivenAmount + numGivenAmount;
-
-      const combinedRemainingLoan = oldRemainingLoan + newLoanAmountNumber;
-
-      const combinedDaysForLoan = oldDaysForLoan + numDaysForLoan;
-
-
-      let finalTotalDueInstallments = oldTotalDueInstallments;
-
-      if (oldTotalDueInstallments <= 0) {
-        finalTotalDueInstallments = Math.ceil(
-          newLoanAmountNumber / numPerDayCollection
-        );
-      } else {
-        const computedDueFromRemaining = Math.ceil(
-          combinedRemainingLoan / numPerDayCollection
-        );
-        finalTotalDueInstallments = Math.max(
-          oldTotalDueInstallments,
-          computedDueFromRemaining
-        );
-      }
-
-      existingLoan.loanAmount = combinedLoanAmount;
-      existingLoan.givenAmount = combinedGivenAmount;
-      existingLoan.perDayCollection = numPerDayCollection;
-      existingLoan.daysForLoan = combinedDaysForLoan;
-      existingLoan.loanStartDate = startDate;
-      // recompute loanEndDate from start + combinedDaysForLoan
-      const newEnd = new Date(startDate);
-      newEnd.setDate(startDate.getDate() + combinedDaysForLoan);
-      existingLoan.loanEndDate = newEnd;
-
-      existingLoan.totalPaidLoan = oldTotalPaidLoan;
-      existingLoan.totalPaidInstallments = oldTotalPaidInstallments;
-      existingLoan.remainingLoan = combinedRemainingLoan;
-      existingLoan.totalDueInstallments = finalTotalDueInstallments;
-      existingLoan.status = "Open";
-
-      const updatedLoan = await existingLoan.save();
-
-      return sendResponse(res, 200, "Success", {
-        message: "New loan amount added — dues and days merged successfully!",
-        data: updatedLoan,
-      });
-    }
-
-    // fallback (shouldn't reach here)
-    return sendResponse(res, 400, "Failed", {
-      message: "Unable to process addNewLoanForExisting for this record.",
+    sendResponse(res, 200, "Success", {
+      message: "New loan details overwritten successfully. Previous installment history retained.",
+      data: updatedLoan,
     });
   } catch (error) {
-    console.error("Add new loan error:", error);
+    console.error("Add new loan overwrite error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
+
+
 
 loanCollectionController.get("/history/:id", async (req, res) => {
   try {
@@ -745,10 +679,31 @@ loanCollectionController.get("/expense", async (req, res) => {
 });
 
 
+// ------------------------- 📘 Excel Download -------------------------
 loanCollectionController.get("/download/profit/excel", async (req, res) => {
   try {
-    const loans = await LoanCollection.find().lean();
+    const { dateFrom, dateTo } = req.query;
+    const query = {};
 
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) {
+        const df = new Date(dateFrom);
+        if (!isNaN(df.getTime())) query.createdAt.$gte = df;
+      }
+      if (dateTo) {
+        const dt = new Date(dateTo);
+        if (!isNaN(dt.getTime())) {
+          dt.setHours(23, 59, 59, 999);
+          query.createdAt.$lte = dt;
+        }
+      }
+      if (Object.keys(query.createdAt).length === 0) delete query.createdAt;
+    }
+
+    const loans = await LoanCollection.find(query).lean();
+
+    // Calculate daily profit
     const dailyProfit = {};
     loans.forEach((loan) => {
       const dateKey = new Date(loan.createdAt).toISOString().split("T")[0];
@@ -761,17 +716,49 @@ loanCollectionController.get("/download/profit/excel", async (req, res) => {
     const worksheet = workbook.addWorksheet("Daily Profit");
 
     worksheet.columns = [
+      { header: "S.No", key: "sno", width: 10 },
       { header: "Date", key: "date", width: 20 },
-      { header: "Profit (₹)", key: "profit", width: 15 },
+      { header: "Profit", key: "profit", width: 20 },
     ];
 
-    Object.entries(dailyProfit).forEach(([date, profit]) => {
-      worksheet.addRow({ date, profit });
+    let totalProfit = 0;
+    Object.entries(dailyProfit).forEach(([date, profit], index) => {
+      totalProfit += profit;
+      worksheet.addRow({ sno: index + 1, date, profit });
     });
 
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).alignment = { horizontal: "center" };
+    // Style header
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, size: 12 };
+    headerRow.alignment = { horizontal: "center", vertical: "middle" };
+    headerRow.height = 20;
 
+    // ✅ Add Total row
+    const totalRow = worksheet.addRow({
+      sno: "",
+      date: "Total",
+      profit: totalProfit,
+    });
+    totalRow.font = { bold: true };
+
+    worksheet.eachRow((row) => {
+      row.alignment = { vertical: "middle", horizontal: "left" };
+      row.height = 18;
+    });
+
+    // ✅ Set borders
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+      });
+    });
+
+    // Send file
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -781,6 +768,103 @@ loanCollectionController.get("/download/profit/excel", async (req, res) => {
     res.end();
   } catch (error) {
     console.error("Profit Excel download error:", error);
+    sendResponse(res, 500, "Failed", { message: error.message });
+  }
+});
+
+
+
+// ------------------------- 📕 PDF Download -------------------------
+loanCollectionController.get("/download/profit/pdf", async (req, res) => {
+  try {
+    const { dateFrom, dateTo } = req.query;
+    const query = {};
+
+    if (dateFrom || dateTo) {
+      query.createdAt = {};
+      if (dateFrom) {
+        const df = new Date(dateFrom);
+        if (!isNaN(df.getTime())) query.createdAt.$gte = df;
+      }
+      if (dateTo) {
+        const dt = new Date(dateTo);
+        if (!isNaN(dt.getTime())) {
+          dt.setHours(23, 59, 59, 999);
+          query.createdAt.$lte = dt;
+        }
+      }
+      if (Object.keys(query.createdAt).length === 0) delete query.createdAt;
+    }
+
+    const loans = await LoanCollection.find(query).lean();
+
+    // Calculate daily profit
+    const dailyProfit = {};
+    loans.forEach((loan) => {
+      const dateKey = new Date(loan.createdAt).toISOString().split("T")[0];
+      const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
+      if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
+      dailyProfit[dateKey] += profit;
+    });
+
+    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=profit.pdf");
+    doc.pipe(res);
+
+    // Title
+    doc.fontSize(18).text("Daily Profit Report", { align: "center", underline: true });
+    doc.moveDown(1);
+
+    // Table Header
+    const tableTop = doc.y;
+    const columnPositions = {
+      sno: 80,
+      date: 120,
+      profit: 300,
+    };
+
+    doc.fontSize(11).font("Helvetica-Bold");
+    doc.text("S.No", columnPositions.sno, tableTop);
+    doc.text("Date", columnPositions.date, tableTop);
+    doc.text("Profit", columnPositions.profit, tableTop);
+    doc.moveDown(0.5);
+    doc.moveTo(60, doc.y).lineTo(500, doc.y).stroke();
+
+    // Table Rows
+    doc.font("Helvetica").fontSize(10);
+    let total = 0;
+    let y = doc.y + 5;
+
+    Object.entries(dailyProfit).forEach(([date, profit], index) => {
+      if (y > 750) {
+        doc.addPage();
+        y = 50;
+      }
+      doc.text(index + 1, columnPositions.sno, y);
+      doc.text(date, columnPositions.date, y);
+      doc.text(`${profit.toLocaleString()}`, columnPositions.profit, y, {
+        width: 60,
+        align: "right",
+      });
+      total += profit;
+      y += 18;
+    });
+
+    // Draw line before total
+    doc.moveTo(60, y).lineTo(500, y).stroke();
+
+    // ✅ Total Row
+    doc.font("Helvetica-Bold").fontSize(12);
+    doc.text("Total", columnPositions.date, y + 5);
+    doc.text(`${total.toLocaleString()}`, columnPositions.profit, y + 5, {
+      width: 60,
+      align: "right",
+    });
+
+    doc.end();
+  } catch (error) {
+    console.error("Profit PDF download error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
@@ -822,45 +906,6 @@ loanCollectionController.get("/download/expense/excel", async (req, res) => {
     res.end();
   } catch (error) {
     console.error("Expense Excel download error:", error);
-    sendResponse(res, 500, "Failed", { message: error.message });
-  }
-});
-
-
-loanCollectionController.get("/download/profit/pdf", async (req, res) => {
-  try {
-    const loans = await LoanCollection.find().lean();
-
-    const dailyProfit = {};
-    loans.forEach((loan) => {
-      const dateKey = new Date(loan.createdAt).toISOString().split("T")[0];
-      const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
-      if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
-      dailyProfit[dateKey] += profit;
-    });
-
-    const doc = new PDFDocument({ margin: 40 });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", "attachment; filename=profit.pdf");
-    doc.pipe(res);
-
-    doc.fontSize(18).text("Daily Profit Report", { align: "center" });
-    doc.moveDown(1.5);
-
-    doc.fontSize(10).text("Date", 80, doc.y, { continued: true });
-    doc.text("Profit (₹)", 300);
-    doc.moveDown(0.5);
-    doc.moveTo(40, doc.y).lineTo(550, doc.y).stroke();
-
-    Object.entries(dailyProfit).forEach(([date, profit]) => {
-      doc.moveDown(0.5);
-      doc.fontSize(10).text(date, 80, doc.y, { continued: true });
-      doc.text(profit.toFixed(2), 300);
-    });
-
-    doc.end();
-  } catch (error) {
-    console.error("Profit PDF download error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
