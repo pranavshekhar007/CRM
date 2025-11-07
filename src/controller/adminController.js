@@ -6,19 +6,12 @@ const Admin = require("../model/admin.schema");
 const bcrypt = require("bcrypt");
 const adminController = express.Router();
 require("dotenv").config();
-const cloudinary = require("../utils/cloudinary");
-const upload = require("../utils/multer");
-const moment = require("moment");
-const Attendance = require("../model/attendanceRecord.schema");
-const Leave = require("../model/leaveApplication.schema");
-const Candidate = require("../model/candidate.schema");
-const Department = require("../model/department.schema");
-const Announcement = require("../model/announcement.schema");
-// const Meeting = require("../model/meeting.schema");
 const Employee = require("../model/employee.schema");
-const Branch = require("../model/branch.schema");
-const auth = require("../utils/auth");
-// const Hiring = require("../model/hiring.schema");
+const LoanCollection = require("../model/loanCollection.schema");
+const Profit = require("../model/profit.schema");
+const Expense = require("../model/expense.schema");
+const Investment = require("../model/investment.schema");
+const ReserveFund = require("../model/reserveFund.schema");
 
 // ... (imports remain the same)
 
@@ -76,7 +69,7 @@ adminController.post("/create", async (req, res) => {
     // 💡 IMPORTANT: Replace 'EMPLOYEE_ROLE_ID' with the actual MongoDB ObjectId of your 'Employee' role.
     // Since you didn't provide Role schema or list, this is a necessary placeholder.
     // Alternatively, you could check the Role name after fetching it: const roleData = await Role.findById(role); if (roleData.name === "Employee") { ... }
-    
+
     // For this demo, let's assume we proceed if the role is *not* an 'Admin' role (which is a rough but common approach).
     // The most robust way is to check the *name* of the role.
     const isEmployeeRole = async (roleId) => {
@@ -84,7 +77,7 @@ adminController.post("/create", async (req, res) => {
       // const Role = require("../model/role.schema"); // Assuming Role is your role model
       // const roleDoc = await Role.findById(roleId);
       // return roleDoc && roleDoc.name.toLowerCase().includes('employee');
-      
+
       // Since we don't have the Role model here, we'll use a placeholder logic.
       // A common pattern is to check if the role ID is for a non-admin role.
       // This is a **TEMPORARY** solution. A proper solution requires knowing the Role Name/ID.
@@ -92,7 +85,6 @@ adminController.post("/create", async (req, res) => {
     };
 
     if (await isEmployeeRole(role)) {
-      
       // ⚠️ Simple ID generation. Use a proper sequence generator in production.
       const newEmployeeId = `EMP-${Math.floor(Math.random() * 100000) + 1000}`;
 
@@ -177,7 +169,6 @@ adminController.put("/update/:id", async (req, res) => {
   }
 });
 
-
 adminController.delete("/delete/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -217,13 +208,17 @@ adminController.post("/login", async (req, res) => {
       .lean();
 
     if (!user) {
-      return sendResponse(res, 422, "Failed", { message: "Invalid Credentials" });
+      return sendResponse(res, 422, "Failed", {
+        message: "Invalid Credentials",
+      });
     }
 
     // Step 2: Verify password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return sendResponse(res, 422, "Failed", { message: "Invalid Credentials" });
+      return sendResponse(res, 422, "Failed", {
+        message: "Invalid Credentials",
+      });
     }
 
     // Step 3: Generate token
@@ -253,9 +248,10 @@ adminController.post("/login", async (req, res) => {
       permissions: updatedAdmin.role.permissions.map((perm) => ({
         ...perm,
         // ✅ keep real selectedActions if present, fallback to empty []
-        selectedActions: perm.selectedActions && perm.selectedActions.length
-          ? perm.selectedActions
-          : perm.actions || [], // if still not present, fallback to actions
+        selectedActions:
+          perm.selectedActions && perm.selectedActions.length
+            ? perm.selectedActions
+            : perm.actions || [], // if still not present, fallback to actions
         // Optional: remove raw `actions` if not needed
         actions: undefined,
       })),
@@ -279,8 +275,6 @@ adminController.post("/login", async (req, res) => {
     });
   }
 });
-
-
 
 adminController.post("/list", async (req, res) => {
   try {
@@ -384,125 +378,167 @@ adminController.post("/reset-password", async (req, res) => {
   }
 });
 
-
+/**
+ * 📊 Finance Dashboard Details
+ */
 adminController.get("/dashboard-details", async (req, res) => {
   try {
-    // 1️⃣ Parallel counts
-    const [
-      totalEmployee,
-      totalBranch,
-      attendanceRecords,
-      pendingLeaves,
-      totalCandidate,
-      departmentList,
-    ] = await Promise.all([
-      Employee.countDocuments(),
-      Branch.countDocuments(),
-      Attendance.find(),
-      Leave.countDocuments({ status: "pending" }),
-      Candidate.countDocuments(),
-      Department.find(),
-    ]);
+    // ✅ Fetch everything in parallel
+    const [loans, profits, expenses, investments, reserveFunds] =
+      await Promise.all([
+        LoanCollection.find().lean(),
+        Profit.find().lean(),
+        Expense.find().lean(),
+        Investment.find().lean(),
+        ReserveFund.find().lean(),
+      ]);
 
-    // 2️⃣ Attendance rate
-    const totalAttendance = attendanceRecords.length;
-    const presentCount = attendanceRecords.filter(
-      (a) => a.status === "present"
-    ).length;
-    const attendanceRate = totalAttendance
-      ? ((presentCount / totalAttendance) * 100).toFixed(2)
-      : 0;
+    // ========== 1️⃣ USER METRICS (CUSTOMERS) ==========
+    const uniqueUsers = new Set(loans.map((l) => l.name?.trim().toLowerCase()))
+      .size;
+    const totalLoans = loans.length;
+    const totalLoanAmount = loans.reduce(
+      (acc, l) => acc + (l.loanAmount || 0),
+      0
+    );
+    const totalGivenAmount = loans.reduce(
+      (acc, l) => acc + (l.givenAmount || 0),
+      0
+    );
+    const totalRemainingLoan = loans.reduce(
+      (acc, l) => acc + (l.remainingLoan || 0),
+      0
+    );
 
-    // 3️⃣ Department distribution for chart
-    const departmentDistribution = await Employee.aggregate([
-      { $group: { _id: "$department", count: { $sum: 1 } } },
-    ]);
+    // ========== 2️⃣ PROFIT METRICS ==========
+    const manualProfitTotal = profits.reduce(
+      (acc, p) => acc + (p.amount || 0),
+      0
+    );
+    const autoLoanProfit = loans.reduce(
+      (acc, l) => acc + ((l.loanAmount || 0) - (l.givenAmount || 0)),
+      0
+    );
+    const totalProfit = manualProfitTotal + autoLoanProfit;
 
-    // 4️⃣ Last 6 months Hiring Trend
-    const sixMonthsAgo = moment()
-      .subtract(6, "months")
-      .startOf("month")
-      .toDate();
-    const last6MonthsHiring = await Hiring.aggregate([
-      { $match: { createdAt: { $gte: sixMonthsAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
-          hires: { $sum: 1 },
-        },
+    // ========== 3️⃣ EXPENSE METRICS ==========
+    const totalExpense = expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+
+    // ========== 4️⃣ INVESTMENT METRICS ==========
+    const totalInvestment = investments.reduce(
+      (acc, i) => acc + (i.amount || 0),
+      0
+    );
+
+    // ========== 5️⃣ RESERVE FUND METRICS ==========
+    const totalReserveFund = reserveFunds.reduce(
+      (acc, f) => acc + (f.amount || 0),
+      0
+    );
+
+    // ========== 6️⃣ DAILY TREND COMBINED ==========
+    const dailyTrend = {};
+
+    // Add from profits
+    profits.forEach((p) => {
+      const dateKey = new Date(p.date).toISOString().split("T")[0];
+      if (!dailyTrend[dateKey])
+        dailyTrend[dateKey] = {
+          profit: 0,
+          expense: 0,
+          investment: 0,
+          reserveFund: 0,
+        };
+      dailyTrend[dateKey].profit += Number(p.amount || 0);
+    });
+
+    // Add from loans (auto profit)
+    loans.forEach((l) => {
+      const dateKey = new Date(l.createdAt).toISOString().split("T")[0];
+      const profit = (l.loanAmount || 0) - (l.givenAmount || 0);
+      if (!dailyTrend[dateKey])
+        dailyTrend[dateKey] = {
+          profit: 0,
+          expense: 0,
+          investment: 0,
+          reserveFund: 0,
+        };
+      dailyTrend[dateKey].profit += profit;
+    });
+
+    // Add from expense
+    expenses.forEach((e) => {
+      const dateKey = new Date(e.date).toISOString().split("T")[0];
+      if (!dailyTrend[dateKey])
+        dailyTrend[dateKey] = {
+          profit: 0,
+          expense: 0,
+          investment: 0,
+          reserveFund: 0,
+        };
+      dailyTrend[dateKey].expense += Number(e.amount || 0);
+    });
+
+    // Add from investment
+    investments.forEach((i) => {
+      const dateKey = new Date(i.date).toISOString().split("T")[0];
+      if (!dailyTrend[dateKey])
+        dailyTrend[dateKey] = {
+          profit: 0,
+          expense: 0,
+          investment: 0,
+          reserveFund: 0,
+        };
+      dailyTrend[dateKey].investment += Number(i.amount || 0);
+    });
+
+    // Add from reserve fund
+    reserveFunds.forEach((f) => {
+      const dateKey = new Date(f.date).toISOString().split("T")[0];
+      if (!dailyTrend[dateKey])
+        dailyTrend[dateKey] = {
+          profit: 0,
+          expense: 0,
+          investment: 0,
+          reserveFund: 0,
+        };
+      dailyTrend[dateKey].reserveFund += Number(f.amount || 0);
+    });
+
+    const dailyTrendArray = Object.entries(dailyTrend)
+      .sort(([a], [b]) => new Date(a) - new Date(b))
+      .map(([date, values]) => ({ date, ...values }));
+
+    // ========== 7️⃣ FINAL DASHBOARD SUMMARY ==========
+    const dashboardSummary = {
+      users: {
+        totalUsers: uniqueUsers,
+        totalLoans,
+        totalLoanAmount,
+        totalGivenAmount,
+        totalRemainingLoan,
       },
-      { $sort: { _id: 1 } },
-    ]);
-
-    // 5️⃣ Candidate status
-    const candidateStatus = await Candidate.aggregate([
-      { $group: { _id: "$status", count: { $sum: 1 } } },
-    ]);
-
-    // 6️⃣ Leave types
-    const leaveTypes = await Leave.aggregate([
-      { $group: { _id: "$type", count: { $sum: 1 } } },
-    ]);
-
-    // 7️⃣ Recent records
-    const [
-      recentLeaves,
-      recentCandidates,
-      recentAnnouncements,
-      recentMeetings,
-    ] = await Promise.all([
-      Leave.find().sort({ createdAt: -1 }).limit(5),
-      Candidate.find().sort({ createdAt: -1 }).limit(5),
-      Announcement.find().sort({ createdAt: -1 }).limit(5),
-      Meeting.find().sort({ createdAt: -1 }).limit(5),
-    ]);
-
-    // 8️⃣ Employee growth for 2025 (monthly)
-    const employeeGrowth = await Employee.aggregate([
-      {
-        $match: {
-          createdAt: {
-            $gte: moment("2025-01-01").startOf("year").toDate(),
-            $lte: moment("2025-12-31").endOf("year").toDate(),
-          },
-        },
+      finance: {
+        totalProfit,
+        manualProfit: manualProfitTotal,
+        loanProfit: autoLoanProfit,
+        totalExpense,
+        totalInvestment,
+        totalReserveFund,
       },
-      {
-        $group: {
-          _id: { $month: "$createdAt" },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+      dailyTrend: dailyTrendArray,
+    };
 
-    // 9️⃣ Send final response
     sendResponse(res, 200, "Success", {
-      message: "Dashboard details retrieved successfully",
-      data: {
-        employees: { totalEmployee, attendanceRate },
-        branches: { totalBranch },
-        pendingLeaves,
-        totalCandidate,
-        departmentDistribution,
-        last6MonthsHiring,
-        candidateStatus,
-        leaveTypes,
-        recentLeaves,
-        recentCandidates,
-        recentAnnouncements,
-        recentMeetings,
-        employeeGrowth2025: employeeGrowth,
-      },
-      statusCode: 200,
+      message: "Finance dashboard data fetched successfully!",
+      data: dashboardSummary,
     });
   } catch (error) {
-    console.error(error);
-    sendResponse(res, 500, "Failed", {
-      message: error.message || "Internal server error",
-      statusCode: 500,
-    });
+    console.error("Dashboard details error:", error);
+    sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
+
+module.exports = adminController;
 
 module.exports = adminController;

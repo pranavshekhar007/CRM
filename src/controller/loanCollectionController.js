@@ -62,16 +62,23 @@ loanCollectionController.post("/list", async (req, res) => {
       ];
     }
 
-    // ✅ Filter by date range (loanStartDate)
+    // ✅ Strict date range filter: only loans fully inside the range
     if (fromDate && toDate) {
-      query.loanStartDate = {
-        $gte: new Date(fromDate),
-        $lte: new Date(toDate),
-      };
+      const start = new Date(fromDate);
+      const end = new Date(toDate);
+      end.setHours(23, 59, 59, 999); // include the entire end day
+
+      query.$and = [
+        { loanStartDate: { $gte: start } },
+        { loanEndDate: { $lte: end } },
+      ];
     } else if (fromDate) {
-      query.loanStartDate = { $gte: new Date(fromDate) };
+      const start = new Date(fromDate);
+      query.loanStartDate = { $gte: start };
     } else if (toDate) {
-      query.loanStartDate = { $lte: new Date(toDate) };
+      const end = new Date(toDate);
+      end.setHours(23, 59, 59, 999);
+      query.loanEndDate = { $lte: end };
     }
 
     const sortOption = { [sortByField]: sortByOrder === "asc" ? 1 : -1 };
@@ -275,7 +282,6 @@ loanCollectionController.post("/addInstallment/:id", async (req, res) => {
   }
 });
 
-
 loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
   try {
     const {
@@ -313,14 +319,18 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
 
     // ✅ Overwrite all loan-related fields with manually provided data
     existingLoan.loanAmount = loanAmount ?? existingLoan.loanAmount;
-    existingLoan.perDayCollection = perDayCollection ?? existingLoan.perDayCollection;
+    existingLoan.perDayCollection =
+      perDayCollection ?? existingLoan.perDayCollection;
     existingLoan.daysForLoan = daysForLoan ?? existingLoan.daysForLoan;
     existingLoan.givenAmount = givenAmount ?? existingLoan.givenAmount;
-    existingLoan.loanStartDate = loanStartDate ? new Date(loanStartDate) : new Date();
+    existingLoan.loanStartDate = loanStartDate
+      ? new Date(loanStartDate)
+      : new Date();
     existingLoan.loanEndDate = loanEndDate ? new Date(loanEndDate) : null;
 
     // ✅ Manual fields (no calculations)
-    existingLoan.remainingLoan = remainingLoan ?? loanAmount ?? existingLoan.remainingLoan;
+    existingLoan.remainingLoan =
+      remainingLoan ?? loanAmount ?? existingLoan.remainingLoan;
     existingLoan.totalPaidLoan = totalPaidLoan ?? 0;
     existingLoan.totalPaidInstallments = totalPaidInstallments ?? 0;
     existingLoan.totalDueInstallments = totalDueInstallments ?? 0;
@@ -333,7 +343,8 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
     const updatedLoan = await existingLoan.save();
 
     sendResponse(res, 200, "Success", {
-      message: "New loan details overwritten successfully. Previous installment history retained.",
+      message:
+        "New loan details overwritten successfully. Previous installment history retained.",
       data: updatedLoan,
     });
   } catch (error) {
@@ -341,8 +352,6 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
-
-
 
 loanCollectionController.get("/history/:id", async (req, res) => {
   try {
@@ -646,7 +655,6 @@ loanCollectionController.get("/profit", async (req, res) => {
   }
 });
 
-
 loanCollectionController.get("/expense", async (req, res) => {
   try {
     const loans = await LoanCollection.find().lean();
@@ -654,9 +662,7 @@ loanCollectionController.get("/expense", async (req, res) => {
     const dailyExpense = {};
 
     loans.forEach((loan) => {
-      const dateKey = new Date(loan.createdAt)
-        .toISOString()
-        .split("T")[0];
+      const dateKey = new Date(loan.createdAt).toISOString().split("T")[0];
       const expense = loan.givenAmount || 0;
 
       if (!dailyExpense[dateKey]) dailyExpense[dateKey] = 0;
@@ -677,7 +683,6 @@ loanCollectionController.get("/expense", async (req, res) => {
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
-
 
 // ------------------------- 📘 Excel Download -------------------------
 loanCollectionController.get("/download/profit/excel", async (req, res) => {
@@ -772,8 +777,6 @@ loanCollectionController.get("/download/profit/excel", async (req, res) => {
   }
 });
 
-
-
 // ------------------------- 📕 PDF Download -------------------------
 loanCollectionController.get("/download/profit/pdf", async (req, res) => {
   try {
@@ -813,7 +816,9 @@ loanCollectionController.get("/download/profit/pdf", async (req, res) => {
     doc.pipe(res);
 
     // Title
-    doc.fontSize(18).text("Daily Profit Report", { align: "center", underline: true });
+    doc
+      .fontSize(18)
+      .text("Daily Profit Report", { align: "center", underline: true });
     doc.moveDown(1);
 
     // Table Header
@@ -868,7 +873,6 @@ loanCollectionController.get("/download/profit/pdf", async (req, res) => {
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
-
 
 loanCollectionController.get("/download/expense/excel", async (req, res) => {
   try {
@@ -947,6 +951,5 @@ loanCollectionController.get("/download/expense/pdf", async (req, res) => {
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
-
 
 module.exports = loanCollectionController;

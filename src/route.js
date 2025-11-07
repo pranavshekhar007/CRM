@@ -49,6 +49,9 @@ const attendanceRegularizationController = require("./controller/attendanceRegul
 const loanCollectionController = require("./controller/loanCollectionController");
 const investmentController = require("./controller/investmentController");
 const expenseController = require("./controller/expenseController");
+const reserveFundController = require("./controller/reserveFundController");
+const profitController = require("./controller/profitController");
+const combinedController = require("./controller/combinedFinanceController");
 
 const router = express.Router();
 
@@ -102,7 +105,9 @@ router.use("/attendance-regularization", attendanceRegularizationController);
 router.use("/loan", loanCollectionController);
 router.use("/expense", expenseController);
 router.use("/investment", investmentController);
-
+router.use("/profit", profitController);
+router.use("/reserve-fund", reserveFundController);
+router.use("/finance", combinedController);
 
 
 module.exports = router;
