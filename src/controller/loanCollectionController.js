@@ -2,29 +2,83 @@ const express = require("express");
 const { sendResponse } = require("../utils/common");
 require("dotenv").config();
 const LoanCollection = require("../model/loanCollection.schema");
+const Profit = require("../model/profit.schema"); 
 const loanCollectionController = express.Router();
 const auth = require("../utils/auth");
 const ExcelJS = require("exceljs");
 const PDFDocument = require("pdfkit");
 
+async function upsertManualProfitForLoan({ loanId, name, phone, manualProfit, createdAt }) {
+  if (manualProfit === null || manualProfit === undefined) return null;
+  const amount = Number(manualProfit || 0);
+  if (isNaN(amount) || amount <= 0) return null;
+
+  const title = `Manual Profit - ${name || phone || loanId}`;
+  const description = `Manual profit entered for loan ${loanId} (${phone || "N/A"})`;
+
+  // Try to find a Profit already linked to this loan (manual)
+  let existing = await Profit.findOne({ loanRef: loanId });
+
+  if (existing) {
+    existing.title = title;
+    existing.amount = amount;
+    existing.date = createdAt || new Date();
+    existing.description = description;
+    await existing.save();
+    return existing;
+  } else {
+    const prof = new Profit({
+      title,
+      amount,
+      date: createdAt || new Date(),
+      description,
+      loanRef: loanId,
+    });
+    await prof.save();
+    return prof;
+  }
+}
+
 loanCollectionController.post("/create", async (req, res) => {
   try {
     const data = req.body;
 
-    // Auto calculate remainingLoan and due installments
+    // Add defaults / calculations
     data.remainingLoan = data.loanAmount;
     data.totalDueInstallments = Math.ceil(
       data.loanAmount / data.perDayCollection
     );
 
-    // Calculate loanEndDate
     const startDate = new Date();
     const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + parseInt(data.daysForLoan));
+    endDate.setDate(endDate.getDate() + parseInt(data.daysForLoan || 0));
     data.loanStartDate = startDate;
     data.loanEndDate = endDate;
 
+    // Normalize loanType if provided
+    if (data.loanType) {
+      data.loanType = String(data.loanType).toLowerCase() === "renew" ? "renew" : "new";
+    } else {
+      data.loanType = "new";
+    }
+
+    // ensure manualProfit is either null or a number
+    if (data.manualProfit === "" || data.manualProfit === undefined) data.manualProfit = null;
+    if (data.manualProfit !== null) data.manualProfit = Number(data.manualProfit);
+
     const loanCreated = await LoanCollection.create(data);
+
+    // If manualProfit provided, create/attach a Profit entry and DO NOT treat this loan for auto-profit
+    if (loanCreated.manualProfit && Number(loanCreated.manualProfit) > 0) {
+      await upsertManualProfitForLoan({
+        loanId: loanCreated._id,
+        name: loanCreated.name,
+        phone: loanCreated.phone,
+        manualProfit: loanCreated.manualProfit,
+        createdAt: loanCreated.createdAt,
+      });
+    }
+
     sendResponse(res, 200, "Success", {
       message: "Loan created successfully!",
       data: loanCreated,
@@ -136,19 +190,15 @@ loanCollectionController.put("/update", async (req, res) => {
       return sendResponse(res, 400, "Failed", { message: "Loan ID missing" });
     }
 
-    // Remove immutable fields
     const { _id, createdAt, updatedAt, ...updateData } = req.body;
 
-    // Fetch the existing loan
     const existingLoan = await LoanCollection.findById(id);
     if (!existingLoan) {
       return sendResponse(res, 404, "Failed", { message: "Loan not found" });
     }
 
-    // --- Recalculate fields if relevant values changed ---
     let shouldRecalculate = false;
 
-    // Detect if loanAmount or perDayCollection or daysForLoan changed
     if (
       updateData.loanAmount !== undefined &&
       updateData.loanAmount !== existingLoan.loanAmount
@@ -167,20 +217,15 @@ loanCollectionController.put("/update", async (req, res) => {
     )
       shouldRecalculate = true;
 
-    // ✅ Recalculate dependent fields if needed
     if (shouldRecalculate) {
       const newLoanAmount = updateData.loanAmount ?? existingLoan.loanAmount;
       const newPerDayCollection =
         updateData.perDayCollection ?? existingLoan.perDayCollection;
       const newDaysForLoan = updateData.daysForLoan ?? existingLoan.daysForLoan;
 
-      // Keep already paid amount
       const totalPaidLoan = existingLoan.totalPaidLoan || 0;
-
-      // Recalculate remaining loan
       updateData.remainingLoan = Math.max(newLoanAmount - totalPaidLoan, 0);
 
-      // Recalculate due installments
       if (updateData.remainingLoan <= 0) {
         updateData.totalDueInstallments = 0;
         updateData.status = "Closed";
@@ -190,17 +235,38 @@ loanCollectionController.put("/update", async (req, res) => {
         );
       }
 
-      // Recalculate loan end date (from loanStartDate + daysForLoan)
       const startDate = existingLoan.loanStartDate || new Date();
       const endDate = new Date(startDate);
       endDate.setDate(endDate.getDate() + parseInt(newDaysForLoan));
       updateData.loanEndDate = endDate;
     }
 
-    // ✅ Update the loan
+    // Normalize loanType & manualProfit
+    if (updateData.loanType) {
+      updateData.loanType = String(updateData.loanType).toLowerCase() === "renew" ? "renew" : "new";
+    }
+
+    if (updateData.manualProfit === "" || updateData.manualProfit === undefined) {
+      // keep as is or null
+      updateData.manualProfit = updateData.manualProfit ?? existingLoan.manualProfit;
+    } else {
+      updateData.manualProfit = Number(updateData.manualProfit);
+    }
+
     const updatedLoan = await LoanCollection.findByIdAndUpdate(id, updateData, {
       new: true,
     });
+
+    // If manualProfit present -> upsert profit record (and this will ensure profitController won't count auto profit)
+    if (updatedLoan && updatedLoan.manualProfit && Number(updatedLoan.manualProfit) > 0) {
+      await upsertManualProfitForLoan({
+        loanId: updatedLoan._id,
+        name: updatedLoan.name,
+        phone: updatedLoan.phone,
+        manualProfit: updatedLoan.manualProfit,
+        createdAt: updatedLoan.updatedAt || new Date(),
+      });
+    }
 
     sendResponse(res, 200, "Success", {
       message: "Loan updated successfully!",
@@ -217,6 +283,9 @@ loanCollectionController.delete("/delete/:id", async (req, res) => {
     const loan = await LoanCollection.findById(req.params.id);
     if (!loan)
       return sendResponse(res, 404, "Failed", { message: "Loan not found" });
+
+    // Remove any linked manual profit as well
+    await Profit.deleteMany({ loanRef: loan._id });
 
     await LoanCollection.findByIdAndDelete(req.params.id);
     sendResponse(res, 200, "Success", {
@@ -297,16 +366,16 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
       totalPaidInstallments,
       totalDueInstallments,
       status,
+      manualProfit,
+      loanType,
     } = req.body;
 
-    // ✅ Validate phone
     if (!phone) {
       return sendResponse(res, 400, "Failed", {
         message: "Phone number is required.",
       });
     }
 
-    // ✅ Find the latest loan by phone
     const existingLoan = await LoanCollection.findOne({ phone }).sort({
       createdAt: -1,
     });
@@ -317,34 +386,38 @@ loanCollectionController.post("/addNewLoanForExisting", async (req, res) => {
       });
     }
 
-    // ✅ Overwrite all loan-related fields with manually provided data
     existingLoan.loanAmount = loanAmount ?? existingLoan.loanAmount;
-    existingLoan.perDayCollection =
-      perDayCollection ?? existingLoan.perDayCollection;
+    existingLoan.perDayCollection = perDayCollection ?? existingLoan.perDayCollection;
     existingLoan.daysForLoan = daysForLoan ?? existingLoan.daysForLoan;
     existingLoan.givenAmount = givenAmount ?? existingLoan.givenAmount;
-    existingLoan.loanStartDate = loanStartDate
-      ? new Date(loanStartDate)
-      : new Date();
+    existingLoan.loanStartDate = loanStartDate ? new Date(loanStartDate) : new Date();
     existingLoan.loanEndDate = loanEndDate ? new Date(loanEndDate) : null;
 
-    // ✅ Manual fields (no calculations)
-    existingLoan.remainingLoan =
-      remainingLoan ?? loanAmount ?? existingLoan.remainingLoan;
+    existingLoan.remainingLoan = remainingLoan ?? loanAmount ?? existingLoan.remainingLoan;
     existingLoan.totalPaidLoan = totalPaidLoan ?? 0;
     existingLoan.totalPaidInstallments = totalPaidInstallments ?? 0;
     existingLoan.totalDueInstallments = totalDueInstallments ?? 0;
     existingLoan.status = status || "Open";
 
-    // ✅ Keep previous installments for viewing history
-    // DO NOT clear installments
-    // existingLoan.installments = existingLoan.installments;
+    // New fields
+    existingLoan.manualProfit = manualProfit ?? existingLoan.manualProfit;
+    existingLoan.loanType = loanType ? String(loanType).toLowerCase() : existingLoan.loanType;
 
     const updatedLoan = await existingLoan.save();
 
+    // upsert manual profit if provided
+    if (updatedLoan.manualProfit && Number(updatedLoan.manualProfit) > 0) {
+      await upsertManualProfitForLoan({
+        loanId: updatedLoan._id,
+        name: updatedLoan.name,
+        phone: updatedLoan.phone,
+        manualProfit: updatedLoan.manualProfit,
+        createdAt: updatedLoan.updatedAt || new Date(),
+      });
+    }
+
     sendResponse(res, 200, "Success", {
-      message:
-        "New loan details overwritten successfully. Previous installment history retained.",
+      message: "New loan details overwritten successfully. Previous installment history retained.",
       data: updatedLoan,
     });
   } catch (error) {
@@ -386,57 +459,62 @@ loanCollectionController.get("/history/:id", async (req, res) => {
 
 loanCollectionController.get("/download/excel", async (req, res) => {
   try {
-    const ExcelJS = require("exceljs");
+    // fields: comma-separated list of field keys to include, or 'all'
+    const fieldsParam = req.query.fields || "all"; // e.g. name,phone,loanAmount
+    const fields = fieldsParam === "all" ? null : fieldsParam.split(",").map(f => f.trim());
+
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Loans");
 
-    // Define columns
-    worksheet.columns = [
-      { header: "#", key: "index", width: 5 },
-      { header: "Name", key: "name", width: 20 },
-      { header: "Phone", key: "phone", width: 15 },
-      { header: "Loan", key: "loanAmount", width: 12 },
-      { header: "Given", key: "givenAmount", width: 12 },
-      { header: "Per Day", key: "perDayCollection", width: 12 },
-      { header: "Days", key: "daysForLoan", width: 10 },
-      { header: "Due Inst.", key: "totalDueInstallments", width: 12 },
-      { header: "Paid Inst.", key: "totalPaidInstallments", width: 12 },
-      { header: "Paid Loan", key: "totalPaidLoan", width: 12 },
-      { header: "Remaining", key: "remainingLoan", width: 12 },
-      { header: "Aadhaar", key: "adharCard", width: 18 },
-      { header: "PAN", key: "panCard", width: 18 },
-      { header: "Reference", key: "referenceBy", width: 18 },
-      { header: "Status", key: "status", width: 10 },
-    ];
+    // map of allowed fields to header labels and keys
+    const allowed = {
+      name: { header: "Name", key: "name", width: 20 },
+      phone: { header: "Phone", key: "phone", width: 15 },
+      loanAmount: { header: "Loan", key: "loanAmount", width: 12 },
+      givenAmount: { header: "Given", key: "givenAmount", width: 12 },
+      perDayCollection: { header: "Per Day", key: "perDayCollection", width: 12 },
+      daysForLoan: { header: "Days", key: "daysForLoan", width: 10 },
+      totalDueInstallments: { header: "Due Inst.", key: "totalDueInstallments", width: 12 },
+      totalPaidInstallments: { header: "Paid Inst.", key: "totalPaidInstallments", width: 12 },
+      totalPaidLoan: { header: "Paid Loan", key: "totalPaidLoan", width: 12 },
+      remainingLoan: { header: "Remaining", key: "remainingLoan", width: 12 },
+      adharCard: { header: "Aadhaar", key: "adharCard", width: 18 },
+      panCard: { header: "PAN", key: "panCard", width: 18 },
+      referenceBy: { header: "Reference", key: "referenceBy", width: 18 },
+      status: { header: "Status", key: "status", width: 10 },
+      loanType: { header: "Loan Type", key: "loanType", width: 10 },
+      manualProfit: { header: "Manual Profit", key: "manualProfit", width: 12 },
+    };
 
-    // Fetch all loans
     const loans = await LoanCollection.find().lean();
 
+    // Build columns based on selection
+    let columns = [];
+    if (!fields) {
+      // all allowed fields plus an index at front
+      columns = [{ header: "#", key: "index", width: 5 }, ...Object.values(allowed)];
+    } else {
+      columns = [{ header: "#", key: "index", width: 5 }, ...fields.map(f => allowed[f]).filter(Boolean)];
+    }
+
+    worksheet.columns = columns;
+
     loans.forEach((loan, index) => {
-      worksheet.addRow({
-        index: index + 1,
-        name: loan.name,
-        phone: loan.phone,
-        loanAmount: loan.loanAmount || 0,
-        givenAmount: loan.givenAmount || 0,
-        perDayCollection: loan.perDayCollection || 0,
-        daysForLoan: loan.daysForLoan || "-",
-        totalDueInstallments: loan.totalDueInstallments || "-",
-        totalPaidInstallments: loan.totalPaidInstallments || 0,
-        totalPaidLoan: loan.totalPaidLoan || 0,
-        remainingLoan: loan.remainingLoan || 0,
-        adharCard: loan.adharCard || "-",
-        panCard: loan.panCard || "-",
-        referenceBy: loan.referenceBy || "-",
-        status: loan.status || "Open",
+      const rowObj = { index: index + 1 };
+      // populate only selected keys
+      columns.slice(1).forEach(col => {
+        if (!col) return;
+        const k = col.key;
+        if (k === "manualProfit") rowObj[k] = loan.manualProfit ?? "-";
+        else if (k === "loanType") rowObj[k] = loan.loanType ?? "-";
+        else rowObj[k] = loan[k] ?? (typeof loan[k] === "number" ? 0 : "-");
       });
+      worksheet.addRow(rowObj);
     });
 
-    // Set header styles
     worksheet.getRow(1).font = { bold: true };
     worksheet.getRow(1).alignment = { horizontal: "center" };
 
-    // Write Excel to buffer and send
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -453,146 +531,74 @@ loanCollectionController.get("/download/excel", async (req, res) => {
 
 loanCollectionController.get("/download/pdf", async (req, res) => {
   try {
-    const PDFDocument = require("pdfkit");
+    const fieldsParam = req.query.fields || "all";
+    const fields = fieldsParam === "all" ? null : fieldsParam.split(",").map(f => f.trim());
 
-    const doc = new PDFDocument({
-      margin: 30,
-      size: "A4",
-      layout: "landscape",
-    });
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      "attachment; filename=loan_collection.pdf"
-    );
-
-    // Pipe to response first
-    doc.pipe(res);
-
-    // Title
-    doc
-      .fontSize(18)
-      .font("Helvetica-Bold")
-      .text("Loan Collection Report", { align: "center" });
-    doc.moveDown(1.5);
-
-    // Fetch loans
     const loans = await LoanCollection.find().lean();
 
-    // Define columns (same as Excel)
-    const colTitles = [
-      "#",
-      "Name",
-      "Phone",
-      "Loan",
-      "Given",
-      "Per Day",
-      "Days",
-      "Due Inst.",
-      "Paid Inst.",
-      "Paid Loan",
-      "Remaining",
-      "Aadhaar",
-      "PAN",
-      "Reference",
-      "Status",
-    ];
-
-    // Adjusted column widths to fit exactly in A4 landscape (≈ 782pt usable)
-    const colWidths = [
-      25, // #
-      80, // Name
-      70, // Phone
-      53, // Loan
-      40, // Given
-      40, // Per Day
-      30, // Days
-      50, // Due Inst.
-      50, // Paid Inst.
-      50, // Paid Loan
-      60, // Remaining
-      70, // Aadhaar
-      60, // PAN
-      60, // Reference
-      50, // Status
-    ];
-
-    const xStart = 30;
-    const usableWidth = colWidths.reduce((a, b) => a + b, 0);
-    let tableTop = 90;
-
-    // Helper: draw single row
-    const drawRow = (y, row, isHeader = false) => {
-      let x = xStart;
-      row.forEach((text, i) => {
-        const width = colWidths[i];
-        const height = 20;
-
-        // Border box
-        doc.rect(x, y - 5, width, height).stroke();
-
-        if (isHeader) {
-          doc
-            .rect(x, y - 5, width, height)
-            .fill("#f0f0f0")
-            .stroke();
-          doc.font("Helvetica-Bold").fontSize(8);
-        } else {
-          doc.font("Helvetica").fontSize(7);
-        }
-
-        // Text inside
-        doc.fillColor("#000").text(String(text), x + 3, y, {
-          width: width - 6,
-          align: "left",
-        });
-
-        x += width;
-      });
+    // choose columns like excel
+    const allowed = {
+      name: "Name",
+      phone: "Phone",
+      loanAmount: "Loan",
+      givenAmount: "Given",
+      perDayCollection: "Per Day",
+      daysForLoan: "Days",
+      totalDueInstallments: "Due Inst.",
+      totalPaidInstallments: "Paid Inst.",
+      totalPaidLoan: "Paid Loan",
+      remainingLoan: "Remaining",
+      adharCard: "Aadhaar",
+      panCard: "PAN",
+      referenceBy: "Reference",
+      status: "Status",
+      loanType: "Loan Type",
+      manualProfit: "Manual Profit",
     };
 
-    // Draw header
-    drawRow(tableTop, colTitles, true);
-    let y = tableTop + 23;
+    const keys = fields ? fields.filter(k => allowed[k]) : Object.keys(allowed);
+    const colTitles = ["#"].concat(keys.map(k => allowed[k]));
 
-    // Draw table rows
-    loans.forEach((loan, index) => {
-      // New page if overflow
-      if (y > 560) {
-        doc.addPage({ margin: 30, size: "A4", layout: "landscape" });
-        drawRow(50, colTitles, true);
-        y = 73;
-      }
+    const doc = new PDFDocument({ margin: 40, size: "A4", layout: "landscape" });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=loan_collection.pdf");
+    doc.pipe(res);
 
-      const row = [
-        index + 1,
-        loan.name || "-",
-        loan.phone || "-",
-        loan.loanAmount ?? 0,
-        loan.givenAmount ?? 0,
-        loan.perDayCollection ?? 0,
-        loan.daysForLoan ?? "-",
-        loan.totalDueInstallments ?? "-",
-        loan.totalPaidInstallments ?? 0,
-        loan.totalPaidLoan ?? 0,
-        loan.remainingLoan ?? 0,
-        loan.adharCard || "-",
-        loan.panCard || "-",
-        loan.referenceBy || "-",
-        loan.status || "Open",
-      ];
+    doc.fontSize(18).font("Helvetica-Bold").text("Loan Collection Report", { align: "center" });
+    doc.moveDown(1);
 
-      drawRow(y, row);
-      y += 20;
+    // Draw headers simple horizontal table
+    const startX = 40;
+    let x = startX;
+    const colW = Math.floor((doc.page.width - 2 * startX) / (colTitles.length)); // rough width
+    doc.fontSize(10).font("Helvetica-Bold");
+    colTitles.forEach(title => {
+      doc.text(title, x, doc.y, { width: colW, align: "left" });
+      x += colW;
     });
 
-    // Footer (optional)
-    // doc.moveDown(2);
-    // doc.fontSize(8).fillColor("#555").text(
-    //   `Generated on: ${new Date().toLocaleString()}`,
-    //   { align: "right" }
-    // );
+    doc.moveDown(0.5);
+    doc.font("Helvetica").fontSize(9);
+
+    let y = doc.y;
+    loans.forEach((loan, idx) => {
+      if (y > doc.page.height - 80) {
+        doc.addPage({ margin: 40, size: "A4", layout: "landscape" });
+        y = 60;
+      }
+      x = startX;
+      doc.text(String(idx + 1), x, y, { width: colW });
+      x += colW;
+      keys.forEach(k => {
+        let textVal = "-";
+        if (k === "manualProfit") textVal = loan.manualProfit != null ? String(loan.manualProfit) : "-";
+        else if (k === "loanType") textVal = loan.loanType || "-";
+        else textVal = loan[k] != null ? String(loan[k]) : "-";
+        doc.text(textVal, x, y, { width: colW });
+        x += colW;
+      });
+      y += 18;
+    });
 
     doc.end();
   } catch (error) {

@@ -7,9 +7,6 @@ const ExcelJS = require("exceljs");
 const PDFDocument = require("pdfkit");
 const LoanCollection = require("../model/loanCollection.schema");
 
-// ===============================
-// 📘 CREATE PROFIT ENTRY
-// ===============================
 profitController.post("/create", async (req, res) => {
   try {
     const { title, amount, date, description = "" } = req.body;
@@ -45,57 +42,57 @@ profitController.post("/create", async (req, res) => {
 });
 
 profitController.post("/list", async (req, res) => {
-    try {
-      const {
-        searchKey = "",
-        dateFrom,
-        dateTo,
-        pageNo = 1,
-        pageCount = 10,
-        sortByField = "date",
-        sortByOrder = -1,
-      } = req.body;
-  
-      const query = {};
-  
-      // Search filter for manual profits
-      if (searchKey && searchKey.trim()) {
-        query.$or = [
-          { title: { $regex: searchKey.trim(), $options: "i" } },
-          { description: { $regex: searchKey.trim(), $options: "i" } },
-        ];
+  try {
+    const {
+      searchKey = "",
+      dateFrom,
+      dateTo,
+      pageNo = 1,
+      pageCount = 10,
+      sortByField = "date",
+      sortByOrder = -1,
+    } = req.body;
+
+    const query = {};
+
+    // Search filter for manual profits
+    if (searchKey && searchKey.trim()) {
+      query.$or = [
+        { title: { $regex: searchKey.trim(), $options: "i" } },
+        { description: { $regex: searchKey.trim(), $options: "i" } },
+      ];
+    }
+
+    // Date filter
+    if (dateFrom || dateTo) {
+      query.date = {};
+      if (dateFrom) {
+        const df = new Date(dateFrom);
+        if (!isNaN(df.getTime())) query.date.$gte = df;
       }
-  
-      // Date filter
-      if (dateFrom || dateTo) {
-        query.date = {};
-        if (dateFrom) {
-          const df = new Date(dateFrom);
-          if (!isNaN(df.getTime())) query.date.$gte = df;
+      if (dateTo) {
+        const dt = new Date(dateTo);
+        if (!isNaN(dt.getTime())) {
+          dt.setHours(23, 59, 59, 999);
+          query.date.$lte = dt;
         }
-        if (dateTo) {
-          const dt = new Date(dateTo);
-          if (!isNaN(dt.getTime())) {
-            dt.setHours(23, 59, 59, 999);
-            query.date.$lte = dt;
-          }
-        }
-        if (Object.keys(query.date).length === 0) delete query.date;
       }
-  
-      // Pagination & sort
-      const skip = (Number(pageNo) - 1) * Number(pageCount);
-      const limit = Number(pageCount);
-      const sort = { [sortByField]: Number(sortByOrder) };
-  
-      // ✅ Fetch both data sources
-      const [manualProfits, loans] = await Promise.all([
-        Profit.find(query).sort(sort).lean(),
-        LoanCollection.find().lean(),
-      ]);
-  
-      // ✅ Transform loan profits into same format as manual profits
-      const autoProfits = loans.map((loan) => ({
+      if (Object.keys(query.date).length === 0) delete query.date;
+    }
+
+    // Pagination & sort
+    const skip = (Number(pageNo) - 1) * Number(pageCount);
+    const limit = Number(pageCount);
+    const sort = { [sortByField]: Number(sortByOrder) };
+
+    const [manualProfits, loans] = await Promise.all([
+      Profit.find(query).sort(sort).lean(),
+      LoanCollection.find().lean(),
+    ]);
+
+    const autoProfits = loans
+      .filter((loan) => !loan.manualProfit || Number(loan.manualProfit) <= 0)
+      .map((loan) => ({
         _id: loan._id,
         title: `Loan Profit - ${loan.name || "N/A"}`,
         amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
@@ -103,120 +100,118 @@ profitController.post("/list", async (req, res) => {
         description: `Auto-generated from loan (${loan.phone || "N/A"})`,
         type: "Auto",
       }));
-  
-      // ✅ Add manual profits
-      const manualFormatted = manualProfits.map((p) => ({
-        _id: p._id,
-        title: p.title,
-        amount: p.amount,
-        date: p.date,
-        description: p.description || "",
-        type: "Manual",
-      }));
-  
-      // ✅ Combine both
-      const combined = [...autoProfits, ...manualFormatted].sort(
-        (a, b) => new Date(b.date) - new Date(a.date)
-      );
-  
-      // ✅ Pagination on combined data
-      const paginated = combined.slice(skip, skip + limit);
-  
-      // ✅ Calculate totals
-      const totalAmount = combined.reduce((acc, f) => acc + (f.amount || 0), 0);
-  
-      sendResponse(res, 200, "Success", {
-        message: "Combined profit list fetched successfully",
-        data: {
-          profits: paginated,
-          totalCount: combined.length,
-          totalAmount,
-          pageNo: Number(pageNo),
-          pageCount: Number(pageCount),
-        },
-      });
-    } catch (error) {
-      console.error("Combined profit list error:", error);
-      sendResponse(res, 500, "Failed", { message: error.message });
-    }
-  });
-  
 
-  profitController.get("/summary", async (req, res) => {
-    try {
-      const [profits, loans] = await Promise.all([
-        Profit.find().lean(),
-        LoanCollection.find().lean(),
-      ]);
-  
-      let totalAmount = 0;
-      let lastMonthAmount = 0;
-      const dailyProfit = {};
-  
-      const now = new Date();
-      const lastMonthIndex = now.getMonth() - 1;
-      const correctedLastMonth = (lastMonthIndex + 12) % 12;
-      const lastMonthYear =
-        lastMonthIndex < 0 ? now.getFullYear() - 1 : now.getFullYear();
-  
-      // ✅ 1️⃣ Manual profits
-      profits.forEach((p) => {
-        const dateObj = new Date(p.date || p.createdAt);
-        const dateKey = dateObj.toISOString().split("T")[0];
-        const amount = Number(p.amount || 0);
-  
-        totalAmount += amount;
-  
-        if (
-          dateObj.getMonth() === correctedLastMonth &&
-          dateObj.getFullYear() === lastMonthYear
-        ) {
-          lastMonthAmount += amount;
-        }
-  
-        if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
-        dailyProfit[dateKey] += amount;
-      });
-  
-      // ✅ 2️⃣ Auto loan profits
-      loans.forEach((loan) => {
-        const dateObj = new Date(loan.createdAt);
-        const dateKey = dateObj.toISOString().split("T")[0];
-        const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
-  
-        totalAmount += profit;
-  
-        if (
-          dateObj.getMonth() === correctedLastMonth &&
-          dateObj.getFullYear() === lastMonthYear
-        ) {
-          lastMonthAmount += profit;
-        }
-  
-        if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
-        dailyProfit[dateKey] += profit;
-      });
-  
-      const dailyTrend = Object.entries(dailyProfit).map(([date, amount]) => ({
-        date,
-        amount,
-      }));
-  
-      sendResponse(res, 200, "Success", {
-        message: "Combined profit summary calculated successfully",
-        data: {
-          totalAmount,
-          lastMonthAmount,
-          totalCount: profits.length + loans.length,
-          dailyTrend,
-        },
-      });
-    } catch (error) {
-      console.error("Profit summary error:", error);
-      sendResponse(res, 500, "Failed", { message: error.message });
-    }
-  });
-  
+    // ✅ Add manual profits
+    const manualFormatted = manualProfits.map((p) => ({
+      _id: p._id,
+      title: p.title,
+      amount: p.amount,
+      date: p.date,
+      description: p.description || "",
+      type: "Manual",
+    }));
+
+    // ✅ Combine both
+    const combined = [...autoProfits, ...manualFormatted].sort(
+      (a, b) => new Date(b.date) - new Date(a.date)
+    );
+
+    // ✅ Pagination on combined data
+    const paginated = combined.slice(skip, skip + limit);
+
+    // ✅ Calculate totals
+    const totalAmount = combined.reduce((acc, f) => acc + (f.amount || 0), 0);
+
+    sendResponse(res, 200, "Success", {
+      message: "Combined profit list fetched successfully",
+      data: {
+        profits: paginated,
+        totalCount: combined.length,
+        totalAmount,
+        pageNo: Number(pageNo),
+        pageCount: Number(pageCount),
+      },
+    });
+  } catch (error) {
+    console.error("Combined profit list error:", error);
+    sendResponse(res, 500, "Failed", { message: error.message });
+  }
+});
+
+profitController.get("/summary", async (req, res) => {
+  try {
+    const [profits, loans] = await Promise.all([
+      Profit.find().lean(),
+      LoanCollection.find().lean(),
+    ]);
+
+    let totalAmount = 0;
+    let lastMonthAmount = 0;
+    const dailyProfit = {};
+
+    const now = new Date();
+    const lastMonthIndex = now.getMonth() - 1;
+    const correctedLastMonth = (lastMonthIndex + 12) % 12;
+    const lastMonthYear =
+      lastMonthIndex < 0 ? now.getFullYear() - 1 : now.getFullYear();
+
+    // ✅ 1️⃣ Manual profits
+    profits.forEach((p) => {
+      const dateObj = new Date(p.date || p.createdAt);
+      const dateKey = dateObj.toISOString().split("T")[0];
+      const amount = Number(p.amount || 0);
+
+      totalAmount += amount;
+
+      if (
+        dateObj.getMonth() === correctedLastMonth &&
+        dateObj.getFullYear() === lastMonthYear
+      ) {
+        lastMonthAmount += amount;
+      }
+
+      if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
+      dailyProfit[dateKey] += amount;
+    });
+
+    // ✅ 2️⃣ Auto loan profits
+    loans.forEach((loan) => {
+      const dateObj = new Date(loan.createdAt);
+      const dateKey = dateObj.toISOString().split("T")[0];
+      const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
+
+      totalAmount += profit;
+
+      if (
+        dateObj.getMonth() === correctedLastMonth &&
+        dateObj.getFullYear() === lastMonthYear
+      ) {
+        lastMonthAmount += profit;
+      }
+
+      if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
+      dailyProfit[dateKey] += profit;
+    });
+
+    const dailyTrend = Object.entries(dailyProfit).map(([date, amount]) => ({
+      date,
+      amount,
+    }));
+
+    sendResponse(res, 200, "Success", {
+      message: "Combined profit summary calculated successfully",
+      data: {
+        totalAmount,
+        lastMonthAmount,
+        totalCount: profits.length + loans.length,
+        dailyTrend,
+      },
+    });
+  } catch (error) {
+    console.error("Profit summary error:", error);
+    sendResponse(res, 500, "Failed", { message: error.message });
+  }
+});
 
 // ===============================
 // ❌ DELETE PROFIT ENTRY
@@ -354,10 +349,18 @@ profitController.get("/download/pdf", async (req, res) => {
     res.setHeader("Content-Disposition", "attachment; filename=profits.pdf");
     doc.pipe(res);
 
-    doc.fontSize(18).text("Profit Report", { align: "center", underline: true });
+    doc
+      .fontSize(18)
+      .text("Profit Report", { align: "center", underline: true });
     doc.moveDown(1);
 
-    const col = { sno: 50, date: 90, title: 160, amount: 350, description: 430 };
+    const col = {
+      sno: 50,
+      date: 90,
+      title: 160,
+      amount: 350,
+      description: 430,
+    };
 
     doc.fontSize(11).font("Helvetica-Bold");
     doc.text("S.No", col.sno);

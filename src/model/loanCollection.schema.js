@@ -4,6 +4,7 @@ const timestamps = require("mongoose-timestamp");
 const installmentSchema = new mongoose.Schema({
   installAmount: { type: Number, required: true },
   date: { type: Date, default: Date.now },
+  remainingAfterInstallment: { type: Number }, 
 });
 
 const loanCollectionSchema = new mongoose.Schema({
@@ -28,6 +29,16 @@ const loanCollectionSchema = new mongoose.Schema({
   loanStartDate: { type: Date },
   loanEndDate: { type: Date },
   installments: [installmentSchema],
+  loanType: {
+    type: String,
+    enum: ["new", "renew"],
+    default: "new",
+  },
+  manualProfit: {
+    type: Number,
+    default: null,
+  },
+
 });
 
 loanCollectionSchema.plugin(timestamps);

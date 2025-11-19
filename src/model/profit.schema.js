@@ -6,6 +6,7 @@ const profitSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
   date: { type: Date, required: true },
   description: { type: String, trim: true, default: "" },
+  loanRef: { type: mongoose.Schema.Types.ObjectId, ref: "LoanCollection", default: null },
 });
 
 profitSchema.plugin(timestamps);
