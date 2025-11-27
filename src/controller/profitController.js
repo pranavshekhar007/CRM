@@ -90,16 +90,18 @@ profitController.post("/list", async (req, res) => {
       LoanCollection.find().lean(),
     ]);
 
-    const autoProfits = loans
-      .filter((loan) => !loan.manualProfit || Number(loan.manualProfit) <= 0)
-      .map((loan) => ({
-        _id: loan._id,
-        title: `Loan Profit - ${loan.name || "N/A"}`,
-        amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
-        date: loan.createdAt,
-        description: `Auto-generated from loan (${loan.phone || "N/A"})`,
-        type: "Auto",
-      }));
+    // const autoProfits = loans
+    //   .filter((loan) => !loan.manualProfit || Number(loan.manualProfit) <= 0)
+    //   .map((loan) => ({
+    //     _id: loan._id,
+    //     title: `Loan Profit - ${loan.name || "N/A"}`,
+    //     amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
+    //     date: loan.createdAt,
+    //     description: `Auto-generated from loan (${loan.phone || "N/A"})`,
+    //     type: "Auto",
+    //   }));
+
+    const autoProfits = []; // Auto profit disabled
 
     // ✅ Add manual profits
     const manualFormatted = manualProfits.map((p) => ({
@@ -112,7 +114,7 @@ profitController.post("/list", async (req, res) => {
     }));
 
     // ✅ Combine both
-    const combined = [...autoProfits, ...manualFormatted].sort(
+    const combined = [...manualFormatted].sort(
       (a, b) => new Date(b.date) - new Date(a.date)
     );
 
@@ -175,23 +177,23 @@ profitController.get("/summary", async (req, res) => {
     });
 
     // ✅ 2️⃣ Auto loan profits
-    loans.forEach((loan) => {
-      const dateObj = new Date(loan.createdAt);
-      const dateKey = dateObj.toISOString().split("T")[0];
-      const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
+    // loans.forEach((loan) => {
+    //   const dateObj = new Date(loan.createdAt);
+    //   const dateKey = dateObj.toISOString().split("T")[0];
+    //   const profit = (loan.loanAmount || 0) - (loan.givenAmount || 0);
 
-      totalAmount += profit;
+    //   totalAmount += profit;
 
-      if (
-        dateObj.getMonth() === correctedLastMonth &&
-        dateObj.getFullYear() === lastMonthYear
-      ) {
-        lastMonthAmount += profit;
-      }
+    //   if (
+    //     dateObj.getMonth() === correctedLastMonth &&
+    //     dateObj.getFullYear() === lastMonthYear
+    //   ) {
+    //     lastMonthAmount += profit;
+    //   }
 
-      if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
-      dailyProfit[dateKey] += profit;
-    });
+    //   if (!dailyProfit[dateKey]) dailyProfit[dateKey] = 0;
+    //   dailyProfit[dateKey] += profit;
+    // });
 
     const dailyTrend = Object.entries(dailyProfit).map(([date, amount]) => ({
       date,
@@ -209,6 +211,30 @@ profitController.get("/summary", async (req, res) => {
     });
   } catch (error) {
     console.error("Profit summary error:", error);
+    sendResponse(res, 500, "Failed", { message: error.message });
+  }
+});
+
+profitController.delete("/delete-all", async (req, res) => {
+  try {
+    // 1️⃣ Delete all manual profits
+    await Profit.deleteMany({});
+
+    // 2️⃣ Reset manualProfit in LoanCollection (so auto-profit works normally)
+    await LoanCollection.updateMany(
+      {},
+      {
+        $set: {
+          manualProfit: null
+        }
+      }
+    );
+
+    sendResponse(res, 200, "Success", {
+      message: "All profits deleted successfully (manual + auto reset)."
+    });
+  } catch (error) {
+    console.error("Delete all profits error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
@@ -231,6 +257,8 @@ profitController.delete("/:id", async (req, res) => {
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
+
+
 
 // ===============================
 // 📘 DOWNLOAD EXCEL

@@ -43,17 +43,11 @@ loanCollectionController.post("/create", async (req, res) => {
   try {
     const data = req.body;
 
-    // Add defaults / calculations
-    data.remainingLoan = data.loanAmount;
-    data.totalDueInstallments = Math.ceil(
-      data.loanAmount / data.perDayCollection
-    );
-
-    const startDate = new Date();
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + parseInt(data.daysForLoan || 0));
-    data.loanStartDate = startDate;
-    data.loanEndDate = endDate;
+    if (data.remainingLoan === "" || data.remainingLoan === undefined) {
+      delete data.remainingLoan;
+    } else {
+      data.remainingLoan = Number(data.remainingLoan);
+    }
 
     // Normalize loanType if provided
     if (data.loanType) {
@@ -197,48 +191,10 @@ loanCollectionController.put("/update", async (req, res) => {
       return sendResponse(res, 404, "Failed", { message: "Loan not found" });
     }
 
-    let shouldRecalculate = false;
-
-    if (
-      updateData.loanAmount !== undefined &&
-      updateData.loanAmount !== existingLoan.loanAmount
-    )
-      shouldRecalculate = true;
-
-    if (
-      updateData.perDayCollection !== undefined &&
-      updateData.perDayCollection !== existingLoan.perDayCollection
-    )
-      shouldRecalculate = true;
-
-    if (
-      updateData.daysForLoan !== undefined &&
-      updateData.daysForLoan !== existingLoan.daysForLoan
-    )
-      shouldRecalculate = true;
-
-    if (shouldRecalculate) {
-      const newLoanAmount = updateData.loanAmount ?? existingLoan.loanAmount;
-      const newPerDayCollection =
-        updateData.perDayCollection ?? existingLoan.perDayCollection;
-      const newDaysForLoan = updateData.daysForLoan ?? existingLoan.daysForLoan;
-
-      const totalPaidLoan = existingLoan.totalPaidLoan || 0;
-      updateData.remainingLoan = Math.max(newLoanAmount - totalPaidLoan, 0);
-
-      if (updateData.remainingLoan <= 0) {
-        updateData.totalDueInstallments = 0;
-        updateData.status = "Closed";
-      } else {
-        updateData.totalDueInstallments = Math.ceil(
-          updateData.remainingLoan / newPerDayCollection
-        );
-      }
-
-      const startDate = existingLoan.loanStartDate || new Date();
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + parseInt(newDaysForLoan));
-      updateData.loanEndDate = endDate;
+    if (updateData.remainingLoan === "" || updateData.remainingLoan === undefined) {
+      delete updateData.remainingLoan;
+    } else {
+      updateData.remainingLoan = Number(updateData.remainingLoan);
     }
 
     // Normalize loanType & manualProfit
@@ -459,19 +415,27 @@ loanCollectionController.get("/history/:id", async (req, res) => {
 
 loanCollectionController.get("/download/excel", async (req, res) => {
   try {
-    // fields: comma-separated list of field keys to include, or 'all'
-    const fieldsParam = req.query.fields || "all"; // e.g. name,phone,loanAmount
-    const fields = fieldsParam === "all" ? null : fieldsParam.split(",").map(f => f.trim());
+    const fieldsParam = req.query.fields || "all";
+    const selectedRows = req.query.rows ? req.query.rows.split(",") : null;
+
+    const fields = fieldsParam === "all"
+      ? null
+      : fieldsParam.split(",").map(f => f.trim());
+
+    // Fetch loans according to selected rows
+    const loans = selectedRows
+      ? await LoanCollection.find({ _id: { $in: selectedRows } }).lean()
+      : await LoanCollection.find().lean();
 
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Loans");
+    const worksheet = workbook.addWorksheet("Loan Collection");
 
-    // map of allowed fields to header labels and keys
+    // Allowed fields
     const allowed = {
-      name: { header: "Name", key: "name", width: 20 },
-      phone: { header: "Phone", key: "phone", width: 15 },
-      loanAmount: { header: "Loan", key: "loanAmount", width: 12 },
-      givenAmount: { header: "Given", key: "givenAmount", width: 12 },
+      name: { header: "Name", key: "name", width: 22 },
+      phone: { header: "Phone", key: "phone", width: 14 },
+      loanAmount: { header: "Loan", key: "loanAmount", width: 10 },
+      givenAmount: { header: "Given", key: "givenAmount", width: 10 },
       perDayCollection: { header: "Per Day", key: "perDayCollection", width: 12 },
       daysForLoan: { header: "Days", key: "daysForLoan", width: 10 },
       totalDueInstallments: { header: "Due Inst.", key: "totalDueInstallments", width: 12 },
@@ -482,72 +446,74 @@ loanCollectionController.get("/download/excel", async (req, res) => {
       panCard: { header: "PAN", key: "panCard", width: 18 },
       referenceBy: { header: "Reference", key: "referenceBy", width: 18 },
       status: { header: "Status", key: "status", width: 10 },
-      loanType: { header: "Loan Type", key: "loanType", width: 10 },
+      loanType: { header: "Loan Type", key: "loanType", width: 12 },
       manualProfit: { header: "Manual Profit", key: "manualProfit", width: 12 },
     };
 
-    const loans = await LoanCollection.find().lean();
-
-    // Build columns based on selection
-    let columns = [];
-    if (!fields) {
-      // all allowed fields plus an index at front
-      columns = [{ header: "#", key: "index", width: 5 }, ...Object.values(allowed)];
-    } else {
-      columns = [{ header: "#", key: "index", width: 5 }, ...fields.map(f => allowed[f]).filter(Boolean)];
-    }
+    // Build dynamic column list
+    const columns = [
+      { header: "#", key: "index", width: 6 },
+      ...(fields
+        ? fields.map(f => allowed[f]).filter(Boolean)
+        : Object.values(allowed))
+    ];
 
     worksheet.columns = columns;
 
-    loans.forEach((loan, index) => {
-      const rowObj = { index: index + 1 };
-      // populate only selected keys
+    // Add data
+    loans.forEach((loan, i) => {
+      const row = { index: i + 1 };
       columns.slice(1).forEach(col => {
-        if (!col) return;
-        const k = col.key;
-        if (k === "manualProfit") rowObj[k] = loan.manualProfit ?? "-";
-        else if (k === "loanType") rowObj[k] = loan.loanType ?? "-";
-        else rowObj[k] = loan[k] ?? (typeof loan[k] === "number" ? 0 : "-");
+        const key = col.key;
+        row[key] = loan[key] ?? "-";
       });
-      worksheet.addRow(rowObj);
+      worksheet.addRow(row);
     });
 
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).alignment = { horizontal: "center" };
+    // Style header row
+    const header = worksheet.getRow(1);
+    header.font = { bold: true, size: 12 };
+    header.alignment = { horizontal: "center" };
 
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    res.setHeader("Content-Disposition", "attachment; filename=loans.xlsx");
+    res.setHeader("Content-Disposition", "attachment; filename=loan_collection.xlsx");
 
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
-    console.error("Excel download error:", error);
+    console.error("Excel Download Error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
 
+
 loanCollectionController.get("/download/pdf", async (req, res) => {
   try {
     const fieldsParam = req.query.fields || "all";
-    const fields = fieldsParam === "all" ? null : fieldsParam.split(",").map(f => f.trim());
+    const selectedRows = req.query.rows ? req.query.rows.split(",") : null;
 
-    const loans = await LoanCollection.find().lean();
+    const fields = fieldsParam === "all"
+      ? null
+      : fieldsParam.split(",").map(f => f.trim());
 
-    // choose columns like excel
+    const loans = selectedRows
+      ? await LoanCollection.find({ _id: { $in: selectedRows } }).lean()
+      : await LoanCollection.find().lean();
+
     const allowed = {
       name: "Name",
       phone: "Phone",
-      loanAmount: "Loan",
-      givenAmount: "Given",
+      loanAmount: "Loan Amount",
+      givenAmount: "Given Amount",
       perDayCollection: "Per Day",
       daysForLoan: "Days",
-      totalDueInstallments: "Due Inst.",
-      totalPaidInstallments: "Paid Inst.",
+      totalDueInstallments: "Due Installments",
+      totalPaidInstallments: "Paid Installments",
       totalPaidLoan: "Paid Loan",
-      remainingLoan: "Remaining",
+      remainingLoan: "Remaining Loan",
       adharCard: "Aadhaar",
       panCard: "PAN",
       referenceBy: "Reference",
@@ -557,55 +523,89 @@ loanCollectionController.get("/download/pdf", async (req, res) => {
     };
 
     const keys = fields ? fields.filter(k => allowed[k]) : Object.keys(allowed);
-    const colTitles = ["#"].concat(keys.map(k => allowed[k]));
+    const headerTitles = ["#"].concat(keys.map(k => allowed[k]));
 
-    const doc = new PDFDocument({ margin: 40, size: "A4", layout: "landscape" });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", "attachment; filename=loan_collection.pdf");
-    doc.pipe(res);
-
-    doc.fontSize(18).font("Helvetica-Bold").text("Loan Collection Report", { align: "center" });
-    doc.moveDown(1);
-
-    // Draw headers simple horizontal table
-    const startX = 40;
-    let x = startX;
-    const colW = Math.floor((doc.page.width - 2 * startX) / (colTitles.length)); // rough width
-    doc.fontSize(10).font("Helvetica-Bold");
-    colTitles.forEach(title => {
-      doc.text(title, x, doc.y, { width: colW, align: "left" });
-      x += colW;
+    const doc = new PDFDocument({
+      margin: 40,
+      size: "A4",
+      layout: "landscape"
     });
 
-    doc.moveDown(0.5);
-    doc.font("Helvetica").fontSize(9);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "attachment; filename=loan_collection.pdf");
 
+    doc.pipe(res);
+
+    // Title
+    doc.fontSize(20).font("Helvetica-Bold").text("Loan Collection Report", {
+      align: "center"
+    });
+    doc.moveDown(1);
+
+    // Column width calculation
+    const tableWidth = doc.page.width - 80;
+    const colWidth = Math.floor(tableWidth / headerTitles.length);
     let y = doc.y;
-    loans.forEach((loan, idx) => {
-      if (y > doc.page.height - 80) {
-        doc.addPage({ margin: 40, size: "A4", layout: "landscape" });
-        y = 60;
-      }
-      x = startX;
-      doc.text(String(idx + 1), x, y, { width: colW });
-      x += colW;
-      keys.forEach(k => {
-        let textVal = "-";
-        if (k === "manualProfit") textVal = loan.manualProfit != null ? String(loan.manualProfit) : "-";
-        else if (k === "loanType") textVal = loan.loanType || "-";
-        else textVal = loan[k] != null ? String(loan[k]) : "-";
-        doc.text(textVal, x, y, { width: colW });
-        x += colW;
+
+    // Draw table header background
+    doc.rect(40, y, tableWidth, 24).fill("#f1f5f9").stroke();
+    doc.fillColor("#000");
+
+    // Header Text
+    let x = 40;
+    doc.font("Helvetica-Bold").fontSize(11);
+    headerTitles.forEach(title => {
+      doc.text(title, x + 4, y + 6, {
+        width: colWidth - 8
       });
-      y += 18;
+      x += colWidth;
+    });
+
+    // Move down
+    y += 26;
+
+    doc.font("Helvetica").fontSize(10);
+
+    loans.forEach((loan, i) => {
+      if (y > doc.page.height - 60) {
+        doc.addPage({ margin: 40, layout: "landscape", size: "A4" });
+        y = 50;
+      }
+
+      // Draw row background (striped rows)
+      if (i % 2 === 0) {
+        doc.rect(40, y, tableWidth, 20).fill("#fafafa").stroke();
+      } else {
+        doc.rect(40, y, tableWidth, 20).fill("#ffffff").stroke();
+      }
+
+      // Row values
+      x = 40;
+
+      const rowValues = [String(i + 1)].concat(
+        keys.map(k => {
+          if (k === "manualProfit") return loan.manualProfit ?? "-";
+          if (k === "loanType") return loan.loanType ?? "-";
+          return loan[k] ?? "-";
+        })
+      );
+
+      rowValues.forEach(text => {
+        doc.fillColor("#000");
+        doc.text(text, x + 4, y + 6, { width: colWidth - 8 });
+        x += colWidth;
+      });
+
+      y += 22;
     });
 
     doc.end();
   } catch (error) {
-    console.error("PDF download error:", error);
+    console.error("PDF Download Error:", error);
     sendResponse(res, 500, "Failed", { message: error.message });
   }
 });
+
 
 loanCollectionController.get("/profit", async (req, res) => {
   try {

@@ -58,14 +58,16 @@ combinedController.post("/list", async (req, res) => {
     ]);
 
     // Combine auto profit from loans
-    const autoProfits = loans.map((loan) => ({
-      title: `Loan Profit - ${loan.name || "N/A"}`,
-      amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
-      date: loan.createdAt,
-      description: `Auto-generated from loan (${loan.phone || "N/A"})`,
-    }));
+    // const autoProfits = loans.map((loan) => ({
+    //   title: `Loan Profit - ${loan.name || "N/A"}`,
+    //   amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
+    //   date: loan.createdAt,
+    //   description: `Auto-generated from loan (${loan.phone || "N/A"})`,
+    // }));
 
-    const allProfits = [...profits, ...autoProfits];
+    const autoProfits = [];
+
+    const allProfits = [...profits];
 
     // Calculate totals
     const totals = {
@@ -134,14 +136,16 @@ combinedController.post("/list", async (req, res) => {
         ReserveFund.find(dateQuery).lean(),
       ]);
   
-      const autoProfits = loans.map((loan) => ({
-        title: `Loan Profit - ${loan.name || "N/A"}`,
-        amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
-        date: loan.createdAt,
-        description: `Auto-generated from loan (${loan.phone || "N/A"})`,
-      }));
+      // const autoProfits = loans.map((loan) => ({
+      //   title: `Loan Profit - ${loan.name || "N/A"}`,
+      //   amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
+      //   date: loan.createdAt,
+      //   description: `Auto-generated from loan (${loan.phone || "N/A"})`,
+      // }));
   
-      const allProfits = [...profits, ...autoProfits];
+      const autoProfits = [];
+
+      const allProfits = [...profits];
       const workbook = new ExcelJS.Workbook();
   
       // 📘 Universal Border & Alignment Helper
@@ -422,14 +426,16 @@ combinedController.post("/list", async (req, res) => {
       ]);
   
       // 🧮 Generate Auto Profits from loans
-      const autoProfits = loans.map((loan) => ({
-        title: `Loan Profit - ${loan.name || "N/A"}`,
-        amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
-        date: loan.createdAt,
-        description: `Auto-generated from loan (${loan.phone || "N/A"})`,
-      }));
+      // const autoProfits = loans.map((loan) => ({
+      //   title: `Loan Profit - ${loan.name || "N/A"}`,
+      //   amount: (loan.loanAmount || 0) - (loan.givenAmount || 0),
+      //   date: loan.createdAt,
+      //   description: `Auto-generated from loan (${loan.phone || "N/A"})`,
+      // }));
   
-      const allProfits = [...profits, ...autoProfits];
+      const autoProfits = [];
+
+      const allProfits = [...profits];
   
       // ========================= PDF GENERATION =========================
       const doc = new PDFDocument({ margin: 40, size: "A4" });
